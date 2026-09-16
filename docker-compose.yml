@@ -1,0 +1,124 @@
+services:
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      # Matches KAFKA_ADVERTISED_LISTENERS' PLAINTEXT_HOST://localhost:29092
+      # below, so a host-side Kafka client can actually reach the broker.
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 5
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+      # Exposes broker throughput metrics over JMX so Kafka UI can show
+      # actual Production/Consumption values. Reachable only from other
+      # containers on sensor-net, not published to the host.
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: kafka
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - sensor-net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: kafka-ui
+    ports:
+      # Host port defaults to 8081 instead of 8080, which is often
+      # already used by other local tools (same reasoning as Mongo's
+      # 27018 mapping below). Overridable, see README > Ports.
+      - "${KAFKA_UI_HOST_PORT:-8081}:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: sensor-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9101
+      KAFKA_CLUSTERS_0_METRICS_TYPE: JMX
+    networks:
+      - sensor-net
+
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    ports:
+      # 27018 on the host by default, not the default 27017, in case a
+      # local MongoDB install already uses that port. Container-to-container
+      # traffic still uses 27017 internally. Overridable, see README > Ports.
+      - "${MONGO_HOST_PORT:-27018}:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - sensor-net
+
+  producer:
+    build: ./producer
+    container_name: sensor-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: sensor-readings
+      FETCH_INTERVAL_SECONDS: "10"
+      # Overridable so scripts/verify_citizen_failover.py can force API
+      # timeouts without touching real networking.
+      API_TIMEOUT_SECONDS: "${API_TIMEOUT_SECONDS:-5}"
+    restart: unless-stopped
+    networks:
+      - sensor-net
+
+  consumer:
+    build: ./consumer
+    container_name: sensor-consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: sensor-readings
+      KAFKA_GROUP_ID: sensor-consumer-group
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: environment_monitoring
+      MONGO_COLLECTION: sensor_readings
+      # Raw readings expire after this many days (see consumer.py);
+      # planners use the daily aggregates in scripts/planner_queries.py.
+      RAW_RETENTION_DAYS: "90"
+      # Dead letters are kept longer since a human needs to review them.
+      DEAD_LETTER_RETENTION_DAYS: "30"
+    restart: unless-stopped
+    networks:
+      - sensor-net
+
+volumes:
+  kafka_data:
+  mongo_data:
+
+networks:
+  sensor-net:
+    driver: bridge
