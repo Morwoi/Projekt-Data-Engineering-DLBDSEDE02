@@ -2,7 +2,7 @@ Wohlgenannt-Markus_IU14080395_DataEngineering_P2_S
 
 # Explanation: Implementation of the Stream Processing Pipeline
 
-GitHub repository: https://github.com/Morwoi/Projekt-Data-Engineering
+GitHub repository: [https://github.com/Morwoi/Projekt-Data-Engineering](https://github.com/Morwoi/Projekt-Data-Engineering-DLBDSEDE02)
 
 ## Implementation
 
